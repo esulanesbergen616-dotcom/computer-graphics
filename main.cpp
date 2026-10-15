@@ -1,113 +1,95 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
 #include <cmath>
 #include <iostream>
+#include <vector>
+
 
 const int WIDTH  = 1280;
-const int HEIGHT = 720;
+const int HEIGHT = 960;
 
-int mode = 1;
-int primIndex = 0;
-bool wireframe = false;
 
-// Примитив түрлері мен атаулары ('P' пернесі арқылы ауысады)
-GLenum primitives[] = { GL_TRIANGLES, GL_LINE_LOOP, GL_LINE_STRIP, GL_POINTS };
-const char* primNames[] = { "GL_TRIANGLES", "GL_LINE_LOOP", "GL_LINE_STRIP", "GL_POINTS" };
+bool isPaused = false;
+bool prevSpaceState = false;
 
-// Пернелердің басылып тұрғанын тексеруге арналған массив
-bool prevKeys[GLFW_KEY_LAST + 1] = { false };
-
-bool pressedOnce(GLFWwindow* window, int key) {
-    bool now = glfwGetKey(window, key) == GLFW_PRESS;
-    bool fired = now && !prevKeys[key];
-    prevKeys[key] = now;
-    return fired;
-}
 
 void onResize(GLFWwindow*, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
-void processInput(GLFWwindow* window) {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, true);
-    }
 
-    // Режимдерді ауыстыру (1 - 5 пернелері)
-    if (pressedOnce(window, GLFW_KEY_1)) { mode = 1; std::cout << "Режим 1: Төртбұрыш (EBO)\n"; }
-    if (pressedOnce(window, GLFW_KEY_2)) { mode = 2; std::cout << "Режим 2: Үшбұрыш (Индексі бұзылған {0,1,2})\n"; }
-    if (pressedOnce(window, GLFW_KEY_3)) { mode = 3; std::cout << "Режим 3: Бесбұрыш (EBO арқылы)\n"; }
-    if (pressedOnce(window, GLFW_KEY_4)) { mode = 4; std::cout << "Режим 4: Екі төртбұрыш (Әр түрлі орында)\n"; }
-    if (pressedOnce(window, GLFW_KEY_5)) { mode = 5; std::cout << "Режим 5: Екі төртбұрыш (Қарама-қарсы қозғалыс)\n"; }
-
-    // 'P' пернесі — примитив түрін өзгерту
-    if (pressedOnce(window, GLFW_KEY_P)) {
-        primIndex = (primIndex + 1) % 4;
-        std::cout << "Примитив түрі: " << primNames[primIndex] << "\n";
-    }
-
-    // 'TAB' пернесі — Wireframe (қаңқалық) режимді қосу/өшіру
-    if (pressedOnce(window, GLFW_KEY_TAB)) {
-        wireframe = !wireframe;
-        glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
-        std::cout << "Wireframe режимі: " << (wireframe ? "ҚОСУЛЫ" : "ӨШІРУЛІ") << "\n";
-    }
-}
-
-// Шейдерді компиляциялау функциясы
 unsigned int makeShader(const char* vsSrc, const char* fsSrc) {
     unsigned int vs = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vs, 1, &vsSrc, nullptr);
     glCompileShader(vs);
     int ok;
     glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
-    if (!ok) { char log[1024]; glGetShaderInfoLog(vs, 1024, nullptr, log); std::cerr << "VS Error: " << log << "\n"; }
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(vs, 1024, nullptr, log);
+        std::cerr << "Vertex Shader қатесі:\n" << log << "\n";
+    }
 
     unsigned int fs = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fs, 1, &fsSrc, nullptr);
     glCompileShader(fs);
     glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
-    if (!ok) { char log[1024]; glGetShaderInfoLog(fs, 1024, nullptr, log); std::cerr << "FS Error: " << log << "\n"; }
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(fs, 1024, nullptr, log);
+        std::cerr << "Fragment Shader қатесі:\n" << log << "\n";
+    }
 
     unsigned int prog = glCreateProgram();
     glAttachShader(prog, vs);
     glAttachShader(prog, fs);
     glLinkProgram(prog);
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) { char log[1024]; glGetProgramInfoLog(prog, 1024, nullptr, log); std::cerr << "Link Error: " << log << "\n"; }
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(prog, 1024, nullptr, log);
+        std::cerr << "Shader Program линковка қатесі:\n" << log << "\n";
+    }
 
     glDeleteShader(vs);
     glDeleteShader(fs);
     return prog;
 }
 
-const char* vertexSrc = R"(
+const char* vertexShaderSrc = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aColor;
 
-uniform vec2 uOffset;
+uniform mat4 uModel;
+
 out vec3 vColor;
 
 void main() {
-    gl_Position = vec4(aPos.xy + uOffset, aPos.z, 1.0);
+    gl_Position = uModel * vec4(aPos, 1.0);
     vColor = aColor;
 }
 )";
 
-const char* fragmentSrc = R"(
+const char* fragmentShaderSrc = R"(
 #version 330 core
 in vec3 vColor;
 out vec4 FragColor;
-void main() { 
-    FragColor = vec4(vColor, 1.0); 
+
+void main() {
+    FragColor = vec4(vColor, 1.0);
 }
 )";
 
 int main() {
+
     if (!glfwInit()) {
-        std::cerr << "GLFW іске қосылмады\n";
+        std::cerr << "GLFW іске қосылмады!\n";
         return -1;
     }
 
@@ -115,123 +97,68 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Интерактивті OpenGL - EBO & Modes", nullptr, nullptr);
+
+    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "2D Scene - Right to Left Square Movement", nullptr, nullptr);
     if (!window) {
-        std::cerr << "Терезе жасалмады.\n";
+        std::cerr << "OpenGL терезесі жасалмады!\n";
         glfwTerminate();
         return -1;
     }
 
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, onResize);
-    glfwSwapInterval(1);
+    glfwSwapInterval(1); 
+
 
     if (gladLoadGL(glfwGetProcAddress) == 0) {
-        std::cerr << "GLAD жүктелмеді\n";
+        std::cerr << "GLAD жүктелмеді!\n";
         glfwTerminate();
         return -1;
     }
 
-    std::cout << "=== БАСҚАРУ ПЕРНЕЛЕРІ ===\n";
-    std::cout << "1-5: Режимдерді ауыстыру\n";
-    std::cout << "P: Примитив түрін өзгерту (Triangles, Lines, Points)\n";
-    std::cout << "TAB: Wireframe (қаңқалық) режимі\n";
-    std::cout << "ESC: Шығу\n\n";
+    std::cout << "OpenGL сәтті іске қосылды!\n";
+    std::cout << "Басқару: Space - Ойынды тоқтату/жалғастыру, ESC - Шығу.\n";
 
-    const int STRIDE = 6 * sizeof(float);
+    const int STRIDE = 6 * sizeof(float); // 3 позиция (x,y,z) + 3 түс (r,g,b)
 
-    // -----------------------------------------------------------------
-    // 1. ТӨРТБҰРЫШ (4 вершина + 6 индекс - EBO арқылы)
-    // -----------------------------------------------------------------
-    float quadVertices[] = {
-        // позиция         // түс
-         0.3f,  0.3f, 0.0f,  1.0f, 0.0f, 0.0f,  // 0 - оң жоғарғы
-         0.3f, -0.3f, 0.0f,  0.0f, 1.0f, 0.0f,  // 1 - оң төменгі
-        -0.3f, -0.3f, 0.0f,  0.0f, 0.0f, 1.0f,  // 2 - сол төменгі
-        -0.3f,  0.3f, 0.0f,  1.0f, 1.0f, 0.0f   // 3 - сол жоғарғы
-    };
 
-    unsigned int quadIndices[] = {
-        0, 1, 3,  // 1-ші үшбұрыш
-        1, 2, 3   // 2-ші үшбұрыш
-    };
+    std::vector<float> circleVertices;
+    std::vector<unsigned int> circleIndices;
 
-    unsigned int vaoQuad, vboQuad, eboQuad;
-    glGenVertexArrays(1, &vaoQuad);
-    glGenBuffers(1, &vboQuad);
-    glGenBuffers(1, &eboQuad);
+    float radius = 0.10f; 
+    int segments = 48;    
 
-    glBindVertexArray(vaoQuad);
-    glBindBuffer(GL_ARRAY_BUFFER, vboQuad);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    circleVertices.push_back(0.0f); circleVertices.push_back(0.0f); circleVertices.push_back(0.0f);
+    circleVertices.push_back(0.2f); circleVertices.push_back(0.9f); circleVertices.push_back(1.0f); 
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboQuad);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quadIndices), quadIndices, GL_STATIC_DRAW);
 
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindVertexArray(0);
+    for (int i = 0; i < segments; ++i) {
+        float angle = 2.0f * 3.14159265f * float(i) / float(segments);
+        float x = radius * std::cos(angle);
+        float y = radius * std::sin(angle);
 
-    // -----------------------------------------------------------------
-    // 2. БҰЗЫЛҒАН ИНДЕКС ЖЕКЕ ҮШБҰРЫШ ҮШІН ({0, 1, 2})
-    // -----------------------------------------------------------------
-    unsigned int brokenIndices[] = { 0, 1, 2 };
-    unsigned int vaoBroken, eboBroken;
-    glGenVertexArrays(1, &vaoBroken);
-    glGenBuffers(1, &eboBroken);
-
-    glBindVertexArray(vaoBroken);
-    glBindBuffer(GL_ARRAY_BUFFER, vboQuad); // Ортақ VBO пайдаланылады
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboBroken);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(brokenIndices), brokenIndices, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindVertexArray(0);
-
-    // -----------------------------------------------------------------
-    // 3. БЕСБҰРЫШ (5 вершина, 3 үшбұрыш, 9 индекс)
-    // -----------------------------------------------------------------
-    float pentVertices[5 * 6];
-    float angles[5] = { -90.0f, -18.0f, 54.0f, 126.0f, 198.0f };
-    float pentColors[5][3] = {
-        {1.0f, 0.0f, 0.0f},
-        {1.0f, 0.6f, 0.0f},
-        {1.0f, 1.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f},
-        {0.0f, 0.5f, 1.0f}
-    };
-    const float PI = 3.14159265f;
-    for (int i = 0; i < 5; i++) {
-        float a = angles[i] * PI / 180.0f;
-        pentVertices[i * 6 + 0] = std::cos(a) * 0.4f;
-        pentVertices[i * 6 + 1] = std::sin(a) * 0.4f;
-        pentVertices[i * 6 + 2] = 0.0f;
-        pentVertices[i * 6 + 3] = pentColors[i][0];
-        pentVertices[i * 6 + 4] = pentColors[i][1];
-        pentVertices[i * 6 + 5] = pentColors[i][2];
+        circleVertices.push_back(x); circleVertices.push_back(y); circleVertices.push_back(0.0f);
+        circleVertices.push_back(0.0f); circleVertices.push_back(0.4f); circleVertices.push_back(0.8f); 
     }
 
-    unsigned int pentIndices[] = {
-        0, 1, 2,
-        0, 2, 3,
-        0, 3, 4
-    };
 
-    unsigned int vaoPent, vboPent, eboPent;
-    glGenVertexArrays(1, &vaoPent);
-    glGenBuffers(1, &vboPent);
-    glGenBuffers(1, &eboPent);
+    for (int i = 0; i < segments; ++i) {
+        circleIndices.push_back(0);
+        circleIndices.push_back(i + 1);
+        circleIndices.push_back(((i + 1) % segments) + 1);
+    }
 
-    glBindVertexArray(vaoPent);
-    glBindBuffer(GL_ARRAY_BUFFER, vboPent);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(pentVertices), pentVertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboPent);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(pentIndices), pentIndices, GL_STATIC_DRAW);
+    unsigned int circleVAO, circleVBO, circleEBO;
+    glGenVertexArrays(1, &circleVAO);
+    glGenBuffers(1, &circleVBO);
+    glGenBuffers(1, &circleEBO);
+
+    glBindVertexArray(circleVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, circleVBO);
+    glBufferData(GL_ARRAY_BUFFER, circleVertices.size() * sizeof(float), circleVertices.data(), GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, circleEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, circleIndices.size() * sizeof(unsigned int), circleIndices.data(), GL_STATIC_DRAW);
 
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)0);
     glEnableVertexAttribArray(0);
@@ -239,83 +166,125 @@ int main() {
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
 
-    // -----------------------------------------------------------------
-    unsigned int shader = makeShader(vertexSrc, fragmentSrc);
-    int locOffset = glGetUniformLocation(shader, "uOffset");
+    float sqSize = 0.10f; 
+    float squareVertices[] = {
 
-    glPointSize(8.0f); // GL_POINTS үшін нүкте қалыңдығы
+        -sqSize,  sqSize, 0.0f,    0.9f, 0.2f, 0.8f, 
+         sqSize,  sqSize, 0.0f,    1.0f, 0.4f, 0.3f, 
+         sqSize, -sqSize, 0.0f,    0.7f, 0.1f, 0.6f, 
+        -sqSize, -sqSize, 0.0f,    1.0f, 0.3f, 0.5f  
+    };
 
-    float lastFrame = (float)glfwGetTime();
-    float angle = 0.0f;
-    float speed = 1.5f;
+    unsigned int squareIndices[] = {
+        0, 1, 2, 
+        0, 2, 3  
+    };
 
-    // -----------------------------------------------------------------
-    // НЕГІЗГІ ЦИКЛ
-    // -----------------------------------------------------------------
+    unsigned int squareVAO, squareVBO, squareEBO;
+    glGenVertexArrays(1, &squareVAO);
+    glGenBuffers(1, &squareVBO);
+    glGenBuffers(1, &squareEBO);
+
+    glBindVertexArray(squareVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, squareVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(squareVertices), squareVertices, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, squareEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(squareIndices), squareIndices, GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, STRIDE, (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+
+
+    unsigned int shaderProgram = makeShader(vertexShaderSrc, fragmentShaderSrc);
+    int modelLoc = glGetUniformLocation(shaderProgram, "uModel");
+
+
+    float ballX = 0.0f;          
+    float ballBaseY = -0.55f;    
+    float maxHeight = 0.65f;     
+    float bouncePeriod = 1.8f;   
+
+    float accumulatedTime = 0.0f;
+    float lastRealTime = (float)glfwGetTime();
+
+
     while (!glfwWindowShouldClose(window)) {
-        float now = (float)glfwGetTime();
-        float dt = now - lastFrame;
-        lastFrame = now;
+        float currentRealTime = (float)glfwGetTime();
+        float dt = currentRealTime - lastRealTime;
+        lastRealTime = currentRealTime;
 
-        processInput(window);
-        angle += speed * dt;
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+            glfwSetWindowShouldClose(window, true);
+        }
 
-        GLenum prim = primitives[primIndex];
+        bool spacePressed = (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS);
+        if (spacePressed && !prevSpaceState) {
+            isPaused = !isPaused;
+            std::cout << (isPaused ? "Ойын тоқтатылды (Пауза)\n" : "Ойын жалғасуда...\n");
+        }
+        prevSpaceState = spacePressed;
 
-        glClearColor(0.1f, 0.12f, 0.18f, 1.0f);
+        if (!isPaused) {
+            accumulatedTime += dt;
+        }
+
+        float t = accumulatedTime; 
+
+        float phase = std::fmod(t, bouncePeriod) / bouncePeriod; 
+        float ballY = ballBaseY + maxHeight * std::sin(phase * 3.14159265f);
+
+
+        float tripDuration = 4.0f * bouncePeriod; 
+        float span = 3.6f;                        
+        float squareSpeed = span / tripDuration;
+
+        float tPeakOffset = 0.5f * bouncePeriod;
+        float shiftedTime = t - tPeakOffset;
+        float normalizedTime = std::fmod(shiftedTime, tripDuration);
+        if (normalizedTime < 0.0f) normalizedTime += tripDuration;
+
+
+        float squareX = (span / 2.0f) - (normalizedTime * squareSpeed);
+        float squareY = ballBaseY;                    
+
+
+        glClearColor(0.06f, 0.07f, 0.12f, 1.0f); // Терең қанық түсті фон
         glClear(GL_COLOR_BUFFER_BIT);
 
-        glUseProgram(shader);
+        glUseProgram(shaderProgram);
 
-        if (mode == 1) {
-            // Режим 1: Ортада айналатын төртбұрыш
-            glBindVertexArray(vaoQuad);
-            glUniform2f(locOffset, std::cos(angle) * 0.4f, std::sin(angle) * 0.4f);
-            glDrawElements(prim, 6, GL_UNSIGNED_INT, 0);
-        }
-        else if (mode == 2) {
-            // Режим 2: Тек бір үшбұрыш ({0, 1, 2})
-            glBindVertexArray(vaoBroken);
-            glUniform2f(locOffset, std::cos(angle) * 0.4f, std::sin(angle) * 0.4f);
-            glDrawElements(prim, 3, GL_UNSIGNED_INT, 0);
-        }
-        else if (mode == 3) {
-            // Режим 3: Түрлі-түсті бесбұрыш
-            glBindVertexArray(vaoPent);
-            glUniform2f(locOffset, std::cos(angle) * 0.4f, std::sin(angle) * 0.4f);
-            glDrawElements(prim, 9, GL_UNSIGNED_INT, 0);
-        }
-        else if (mode == 4) {
-            // Режим 4: Екі тұрғын төртбұрыш (сол және оң жақта)
-            glBindVertexArray(vaoQuad);
-            glUniform2f(locOffset, -0.4f, 0.0f);
-            glDrawElements(prim, 6, GL_UNSIGNED_INT, 0);
-            glUniform2f(locOffset, 0.4f, 0.0f);
-            glDrawElements(prim, 6, GL_UNSIGNED_INT, 0);
-        }
-        else if (mode == 5) {
-            // Режим 5: Екі төртбұрыш қарама-қарсы бағытта қозғалады
-            glBindVertexArray(vaoQuad);
-            glUniform2f(locOffset, std::cos(angle) * 0.4f, std::sin(angle) * 0.4f);
-            glDrawElements(prim, 6, GL_UNSIGNED_INT, 0);
-            glUniform2f(locOffset, -std::cos(angle) * 0.4f, -std::sin(angle) * 0.4f);
-            glDrawElements(prim, 6, GL_UNSIGNED_INT, 0);
-        }
+
+        glm::mat4 ballModel = glm::mat4(1.0f);
+        ballModel = glm::translate(ballModel, glm::vec3(ballX, ballY, 0.0f));
+
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(ballModel));
+        glBindVertexArray(circleVAO);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(circleIndices.size()), GL_UNSIGNED_INT, 0);
+
+
+        glm::mat4 squareModel = glm::mat4(1.0f);
+        squareModel = glm::translate(squareModel, glm::vec3(squareX, squareY, 0.0f));
+
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(squareModel));
+        glBindVertexArray(squareVAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // ТАЗАЛАУ
-    glDeleteVertexArrays(1, &vaoQuad);
-    glDeleteVertexArrays(1, &vaoBroken);
-    glDeleteVertexArrays(1, &vaoPent);
-    glDeleteBuffers(1, &vboQuad);
-    glDeleteBuffers(1, &vboPent);
-    glDeleteBuffers(1, &eboQuad);
-    glDeleteBuffers(1, &eboBroken);
-    glDeleteBuffers(1, &eboPent);
-    glDeleteProgram(shader);
+    // 9. Жадты тазалау
+    glDeleteVertexArrays(1, &circleVAO);
+    glDeleteBuffers(1, &circleVBO);
+    glDeleteBuffers(1, &circleEBO);
+    glDeleteVertexArrays(1, &squareVAO);
+    glDeleteBuffers(1, &squareVBO);
+    glDeleteBuffers(1, &squareEBO);
+    glDeleteProgram(shaderProgram);
 
     glfwTerminate();
     return 0;
